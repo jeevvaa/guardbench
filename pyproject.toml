@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guardbench"
+version = "0.1.0"
+description = "Standardized guardrail evaluation toolkit"
+requires-python = ">=3.9"
+dependencies = [
+  "transformers",
+  "datasets",
+  "accelerate",
+  "torch",
+  "tqdm",
+  "pandas",
+]
+
+[project.scripts]
+guardbench = "guardbench.cli:main"
