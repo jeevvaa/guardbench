@@ -18,3 +18,7 @@ dependencies = [
 
 [project.scripts]
 guardbench = "guardbench.cli:main"
+
+[tool.setuptools]
+packages = ["guardbench", "guardbench.models", "guardbench.datasets"]
+
