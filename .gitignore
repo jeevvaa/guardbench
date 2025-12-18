@@ -6,3 +6,4 @@ runs/
 .DS_Store
 .ipynb_checkpoints/
 guardbench.egg-info/
+*.zip

@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
 import argparse
+import json
 import time
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -39,7 +41,22 @@ def _parse_args():
     # evaluation mode
     e.add_argument("--mode", default="truncation", choices=["truncation", "chunking"])
     e.add_argument("--window", type=int, default=512)
-    e.add_argument("--stride", type=int, default=256)
+
+    # NOTE: internally we keep the name 'stride' so behavior stays identical.
+    e.add_argument(
+        "--overlap",
+        "--stride",
+        dest="stride",
+        type=int,
+        default=256,
+        help="Token overlap between chunks in chunking mode (legacy flag: --stride)",
+    )
+
+    e.add_argument(
+        "--out",
+        default=None,
+        help="Write results JSON to this path (e.g., results.json)",
+    )
 
     # generic HF dataset options
     e.add_argument("--hf-dataset", default=None, help="HF dataset name, e.g. lmsys/toxic-chat")
@@ -51,7 +68,7 @@ def _parse_args():
     e.add_argument("--csv-sep", default=",", help="CSV separator, default ','")
     e.add_argument("--csv-encoding", default="utf-8", help="CSV encoding, default utf-8")
 
-    # schema adapter options 
+    # schema adapter options
     e.add_argument("--text-col", default=None, help="Column containing prompt text")
     e.add_argument("--label-col", default=None, help="Column containing binary label (optional)")
     e.add_argument("--label-is-bool", action="store_true", help="Interpret labels as boolean")
@@ -117,7 +134,7 @@ def main():
             raise ValueError("--hf-dataset is required when --dataset hf")
         if not args.text_col:
             raise ValueError("--text-col is required when --dataset hf")
-        
+
         spec = GenericDatasetSpec(
             text_col=args.text_col,
             label_col=args.label_col,
@@ -161,7 +178,7 @@ def main():
         model_id=args.model,
         mode=args.mode,
         window=args.window,
-        stride=args.stride,
+        stride=args.stride,  # internal name kept for backward compatibility
         batch_size=1,
     )
     pg = PromptGuard(cfg)
@@ -188,7 +205,6 @@ def main():
 
         # label handling
         if label_col is None:
-           
             n_skip += 1
             continue
 
@@ -230,3 +246,36 @@ def main():
     print("Total time (s):", round(t_total, 2))
     print("Examples/sec:", round(eps, 2))
     print("ms/example:", round(ms, 2))
+
+    # ---------- JSON output ----------
+    if args.out:
+        result = {
+            "model": args.model,
+            "dataset": args.dataset,
+            "title": title,
+            "mode": args.mode,
+            "window": args.window,
+            "overlap": args.stride,  
+            "evaluated": n_eval,
+            "skipped": n_skip,
+            "missing_to_benign": missing_to_benign if args.dataset == "toxicchat" else 0,
+            "confusion": {"tp": conf.tp, "fp": conf.fp, "tn": conf.tn, "fn": conf.fn},
+            "metrics": {
+                "precision": conf.precision(),
+                "recall": conf.recall(),
+                "f1": conf.f1(),
+                "fpr": conf.fpr(),
+                "fnr": conf.fnr(),
+                "accuracy": conf.accuracy(),
+            },
+            "latency": {
+                "total_s": t_total,
+                "examples_per_s": eps,
+                "ms_per_example": ms,
+            },
+        }
+
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(f"\nWrote results JSON to: {out_path}")
