@@ -78,10 +78,6 @@ git clone https://github.com/jeevvaa/guardbench.git
 cd guardbench
 
 2) Create a virtual environment
-python -m venv .venv
-
- Windows (PowerShell)
-.\.venv\Scripts\Activate.ps1
 
 3) Install dependencies
 pip install -r requirements.txt
