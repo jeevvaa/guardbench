@@ -18,33 +18,86 @@ It reports:
 - Metrics: Precision, Recall, F1, FPR, FNR, Accuracy
 - Latency: total time, examples/sec, ms/example
 
----
-
-## Features
-### ✅ What works today
-- `guardbench eval` CLI entrypoint
-- PromptGuard model runner (HuggingFace model id)
-- Two eval modes:
-  - `truncation` (single window)
-  - `chunking` (sliding window with overlap; flags: --overlap/--stride)
-- Dataset support:
-  - `--dataset toxicchat`
-  - `--dataset jailbreakhub`
-  - `--dataset hf` (generic HuggingFace)
-  - `--dataset csv` (generic local CSV)
-- Explicit label + column mapping flags (so “any dataset” is possible)
-
-### 🚧 What’s next
-- More model backends (e.g., LlamaGuard, adapters/LoRA, OpenAI API models)
-- More datasets + dataset adapters
-- CI smoke tests + reference numbers
-- Better logging/output formats (JSON)
+For copy/paste-ready commands, see: `docs/USAGE.md`
 
 ---
+
+## Quickstart
+
+```bash
+pip install -r requirements.txt
+pip install -e .
+
+guardbench eval \
+  --model meta-llama/Prompt-Guard-86M \
+  --dataset toxicchat \
+  --mode truncation \
+  --out runs/toxicchat_trunc.json
+
+  ```
+
+## ✅ Features
+
+guardbench eval CLI entrypoint
+
+PromptGuard runner (HuggingFace model id)
+
+Eval modes:
+
+truncation (single window)
+
+chunking (sliding window; overlap via --overlap (alias: --stride))
+
+Dataset support:
+
+--dataset toxicchat
+
+--dataset jailbreakhub
+
+--dataset hf (generic HuggingFace dataset)
+
+--dataset csv (generic local CSV)
+
+Schema/label adapters (column mapping + label parsing)
+
+JSON output: --out <path> writes a run summary (config + metrics + latency)
+
+## 🚧 What’s next
+
+More model backends (e.g., LlamaGuard, OpenAI API models)
+
+More datasets + dataset adapters
+
+CI smoke tests + reference baselines
+
+Better run management (structured run directories, richer metadata)
 
 ## Setup & Installation
-
-### 1. Clone
-```bash
+1) Clone
 git clone https://github.com/jeevvaa/guardbench.git
 cd guardbench
+
+2) Create a virtual environment
+python -m venv .venv
+
+ Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+3) Install dependencies
+pip install -r requirements.txt
+pip install -e .
+
+4) Verify install
+guardbench
+
+## Further Info
+
+See docs/USAGE.md for:
+
+HuggingFace datasets (--dataset hf)
+
+Local CSVs (--dataset csv)
+
+Label mapping / missing label handling
+
+Reproducibility tips
