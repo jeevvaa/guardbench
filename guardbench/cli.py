@@ -39,7 +39,15 @@ def _parse_args():
     # evaluation mode
     e.add_argument("--mode", default="truncation", choices=["truncation", "chunking"])
     e.add_argument("--window", type=int, default=512)
-    e.add_argument("--stride", type=int, default=256)
+    e.add_argument(
+    "--overlap",
+    "--stride",
+    dest="stride",
+    type=int,
+    default=256,
+    help="Token overlap between chunks in chunking mode (legacy flag: --stride)",
+)
+
 
     # generic HF dataset options
     e.add_argument("--hf-dataset", default=None, help="HF dataset name, e.g. lmsys/toxic-chat")

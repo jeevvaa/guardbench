@@ -26,7 +26,7 @@ It reports:
 - PromptGuard model runner (HuggingFace model id)
 - Two eval modes:
   - `truncation` (single window)
-  - `chunking` (sliding window with stride)
+  - `chunking` (sliding window with overlap; flags: --overlap/--stride)
 - Dataset support:
   - `--dataset toxicchat`
   - `--dataset jailbreakhub`
