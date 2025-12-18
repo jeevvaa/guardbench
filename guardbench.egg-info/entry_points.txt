@@ -1,0 +1,2 @@
+[console_scripts]
+guardbench = guardbench.cli:main
