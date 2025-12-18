@@ -7,3 +7,6 @@ runs/
 .ipynb_checkpoints/
 guardbench.egg-info/
 *.zip
+*.egg-info/
+build/
+dist/
