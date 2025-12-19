@@ -76,10 +76,44 @@ class PromptGuard:
                 return_tensors="pt",
                 truncation=True,
                 max_length=self.cfg.window,
-                padding=False
+                padding=False,
             ).to(self.device)
             logits = self.model(**enc).logits
             pred_id = int(torch.argmax(logits, dim=-1).item())
             if pred_id == int(self.jb_id):
                 return 1
         return 0
+
+    @torch.no_grad()
+    def predict_argmax_batch(self, texts: List[str]) -> List[int]:
+        """
+        Batched argmax prediction for speed.
+
+        IMPORTANT:
+        - For chunking mode, we fall back to the exact existing per-example logic
+          (to avoid changing strict "any chunk triggers positive" behavior).
+        - For truncation mode, each text is evaluated once (same as chunk_text returning [text]).
+        """
+        if not texts:
+            return []
+
+        # Keep chunking behavior identical (no batching in chunking mode)
+        if self.cfg.mode != "truncation":
+            return [self.predict_argmax(t) for t in texts]
+
+        # Normalize inputs like predict_argmax does
+        texts = ["" if t is None else str(t) for t in texts]
+
+        enc = self.tokenizer(
+            texts,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.cfg.window,
+            padding=True,
+        ).to(self.device)
+
+        logits = self.model(**enc).logits
+        pred_ids = torch.argmax(logits, dim=-1).tolist()
+        jb = int(self.jb_id)
+
+        return [1 if int(pid) == jb else 0 for pid in pred_ids]

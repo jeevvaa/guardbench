@@ -4,7 +4,6 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Optional
 
 import torch
 from tqdm import tqdm
@@ -42,7 +41,7 @@ def _parse_args():
     e.add_argument("--mode", default="truncation", choices=["truncation", "chunking"])
     e.add_argument("--window", type=int, default=512)
 
-    # NOTE: internally we keep the name 'stride' so behavior stays identical.
+    # internally we keep name 'stride' so behavior remains identical
     e.add_argument(
         "--overlap",
         "--stride",
@@ -56,6 +55,16 @@ def _parse_args():
         "--out",
         default=None,
         help="Write results JSON to this path (e.g., results.json)",
+    )
+
+    # batching:
+    # - default 1 keeps the exact original behavior
+    # - used only for truncation mode in this CLI
+    e.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for truncation mode inference (default 1 keeps behavior identical)",
     )
 
     # generic HF dataset options
@@ -108,7 +117,6 @@ def main():
     if args.dataset == "toxicchat":
         ds, text_col, label_col, label_is_bool = load_toxicchat1123()
         title = "ToxicChat toxicchat1123 (train+test)"
-        # ToxicChat uses int 0/1 but sometimes has None; we standardize None->benign here:
         spec = GenericDatasetSpec(
             text_col=text_col,
             label_col=label_col,
@@ -156,6 +164,7 @@ def main():
             raise ValueError("--csv-path is required when --dataset csv")
         if not args.text_col:
             raise ValueError("--text-col is required when --dataset csv")
+
         spec = GenericDatasetSpec(
             text_col=args.text_col,
             label_col=args.label_col,
@@ -178,15 +187,16 @@ def main():
         model_id=args.model,
         mode=args.mode,
         window=args.window,
-        stride=args.stride,  # internal name kept for backward compatibility
-        batch_size=1,
+        stride=args.stride,
+        batch_size=args.batch_size,
     )
     pg = PromptGuard(cfg)
 
     print("Device:", pg.device)
     print("Model :", args.model)
     print("Dataset:", title)
-    print("Mode  :", args.mode, f"(window={args.window} stride={args.stride})")
+    print("Mode  :", args.mode, f"(window={args.window} overlap={args.stride})")
+    print("Batch :", args.batch_size)
     print("Text col:", text_col, "| Label col:", label_col, "| label_is_bool:", label_is_bool)
 
     conf = Confusion()
@@ -197,35 +207,78 @@ def main():
     if pg.device == "cuda":
         torch.cuda.synchronize()
 
-    for ex in tqdm(ds, total=len(ds), desc=f"Scoring {args.dataset}"):
-        # prompt text
-        text = ex.get(text_col, "")
-        if text is None:
-            text = ""
+    # ---------- Evaluation ----------
+    use_batching = (args.mode == "truncation" and args.batch_size > 1)
 
-        # label handling
-        if label_col is None:
-            n_skip += 1
-            continue
+    if use_batching:
+        batch_texts = []
+        batch_trues = []
 
-        y_raw = ex.get(label_col, None)
-        if y_raw is None and spec.missing_label == "benign":
-            missing_to_benign += 1
+        for ex in tqdm(ds, total=len(ds), desc=f"Scoring {args.dataset}"):
+            text = ex.get(text_col, "")
+            if text is None:
+                text = ""
 
-        y_true = parse_binary_label(y_raw, spec)
-        if y_true is None:
-            n_skip += 1
-            continue
+            if label_col is None:
+                n_skip += 1
+                continue
 
-        y_pred = pg.predict_argmax(text)
+            y_raw = ex.get(label_col, None)
+            if y_raw is None and spec.missing_label == "benign":
+                missing_to_benign += 1
 
-        conf.add(y_true, y_pred)
-        n_eval += 1
+            y_true = parse_binary_label(y_raw, spec)
+            if y_true is None:
+                n_skip += 1
+                continue
+
+            batch_texts.append(text)
+            batch_trues.append(y_true)
+
+            if len(batch_texts) >= args.batch_size:
+                preds = pg.predict_argmax_batch(batch_texts)
+                for yt, yp in zip(batch_trues, preds):
+                    conf.add(yt, yp)
+                    n_eval += 1
+                batch_texts.clear()
+                batch_trues.clear()
+
+        # flush leftovers
+        if batch_texts:
+            preds = pg.predict_argmax_batch(batch_texts)
+            for yt, yp in zip(batch_trues, preds):
+                conf.add(yt, yp)
+                n_eval += 1
+
+    else:
+        # Original path 
+        for ex in tqdm(ds, total=len(ds), desc=f"Scoring {args.dataset}"):
+            text = ex.get(text_col, "")
+            if text is None:
+                text = ""
+
+            if label_col is None:
+                n_skip += 1
+                continue
+
+            y_raw = ex.get(label_col, None)
+            if y_raw is None and spec.missing_label == "benign":
+                missing_to_benign += 1
+
+            y_true = parse_binary_label(y_raw, spec)
+            if y_true is None:
+                n_skip += 1
+                continue
+
+            y_pred = pg.predict_argmax(text)
+            conf.add(y_true, y_pred)
+            n_eval += 1
 
     if pg.device == "cuda":
         torch.cuda.synchronize()
     t_total = time.perf_counter() - t0
 
+    # ---------- Results ----------
     print("\n=== Results ===")
     if args.dataset == "toxicchat":
         print(f"Evaluated: {n_eval} | Skipped: {n_skip} | Missing->Benign: {missing_to_benign}")
@@ -255,7 +308,8 @@ def main():
             "title": title,
             "mode": args.mode,
             "window": args.window,
-            "overlap": args.stride,  
+            "overlap": args.stride,
+            "batch_size": args.batch_size,
             "evaluated": n_eval,
             "skipped": n_skip,
             "missing_to_benign": missing_to_benign if args.dataset == "toxicchat" else 0,
