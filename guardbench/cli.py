@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 from guardbench.metrics import Confusion
-from guardbench.models.promptguard import PromptGuard, PGConfig
+from guardbench.models.registry import get_backend
 from guardbench.datasets import (
     load_toxicchat1123,
     load_jailbreakhub,
@@ -26,8 +26,17 @@ def _parse_args():
 
     e = sub.add_parser("eval", help="Evaluate a guard model on a dataset")
 
-    # model
-    e.add_argument("--model", required=True, help="HF model id, e.g. meta-llama/Prompt-Guard-86M")
+    # model/backend
+    e.add_argument(
+        "--backend",
+        default="promptguard",
+        help="Guard backend name (default: promptguard)",
+    )
+    e.add_argument(
+        "--model",
+        required=True,
+        help="Model identifier (meaning depends on backend). For PromptGuard: HF model id, e.g. meta-llama/Prompt-Guard-86M",
+    )
 
     # dataset selector
     e.add_argument(
@@ -108,10 +117,10 @@ def main():
 
     if args.cmd is None:
         print("guardbench installed OK")
-        print("Try: guardbench eval --model meta-llama/Prompt-Guard-86M --dataset toxicchat --mode truncation")
+        print("Try: guardbench eval --backend promptguard --model meta-llama/Prompt-Guard-86M --dataset toxicchat --mode truncation")
         return
 
-    # ---------- Load dataset ----------
+    #  Load dataset 
     missing_to_benign = 0
 
     if args.dataset == "toxicchat":
@@ -182,21 +191,22 @@ def main():
         )
         title = f"CSV: {args.csv_path}"
 
-    # ---------- Load model ----------
-    cfg = PGConfig(
+    # Load model via registry 
+    Backend = get_backend(args.backend)
+    model = Backend(
         model_id=args.model,
         mode=args.mode,
         window=args.window,
         stride=args.stride,
         batch_size=args.batch_size,
     )
-    pg = PromptGuard(cfg)
 
-    print("Device:", pg.device)
-    print("Model :", args.model)
+    print("Backend:", args.backend)
+    print("Device :", model.device)
+    print("Model  :", args.model)
     print("Dataset:", title)
-    print("Mode  :", args.mode, f"(window={args.window} overlap={args.stride})")
-    print("Batch :", args.batch_size)
+    print("Mode   :", args.mode, f"(window={args.window} overlap={args.stride})")
+    print("Batch  :", args.batch_size)
     print("Text col:", text_col, "| Label col:", label_col, "| label_is_bool:", label_is_bool)
 
     conf = Confusion()
@@ -204,10 +214,10 @@ def main():
     n_skip = 0
 
     t0 = time.perf_counter()
-    if pg.device == "cuda":
+    if model.device == "cuda":
         torch.cuda.synchronize()
 
-    # ---------- Evaluation ----------
+    # Evaluation 
     use_batching = (args.mode == "truncation" and args.batch_size > 1)
 
     if use_batching:
@@ -236,7 +246,7 @@ def main():
             batch_trues.append(y_true)
 
             if len(batch_texts) >= args.batch_size:
-                preds = pg.predict_argmax_batch(batch_texts)
+                preds = model.predict_batch(batch_texts)
                 for yt, yp in zip(batch_trues, preds):
                     conf.add(yt, yp)
                     n_eval += 1
@@ -245,13 +255,13 @@ def main():
 
         # flush leftovers
         if batch_texts:
-            preds = pg.predict_argmax_batch(batch_texts)
+            preds = model.predict_batch(batch_texts)
             for yt, yp in zip(batch_trues, preds):
                 conf.add(yt, yp)
                 n_eval += 1
 
     else:
-        # Original path 
+        # Original per-example path
         for ex in tqdm(ds, total=len(ds), desc=f"Scoring {args.dataset}"):
             text = ex.get(text_col, "")
             if text is None:
@@ -270,15 +280,15 @@ def main():
                 n_skip += 1
                 continue
 
-            y_pred = pg.predict_argmax(text)
+            y_pred = model.predict_one(text)
             conf.add(y_true, y_pred)
             n_eval += 1
 
-    if pg.device == "cuda":
+    if model.device == "cuda":
         torch.cuda.synchronize()
     t_total = time.perf_counter() - t0
 
-    # ---------- Results ----------
+    # Results 
     print("\n=== Results ===")
     if args.dataset == "toxicchat":
         print(f"Evaluated: {n_eval} | Skipped: {n_skip} | Missing->Benign: {missing_to_benign}")
@@ -300,9 +310,10 @@ def main():
     print("Examples/sec:", round(eps, 2))
     print("ms/example:", round(ms, 2))
 
-    # ---------- JSON output ----------
+    # JSON output 
     if args.out:
         result = {
+            "backend": args.backend,
             "model": args.model,
             "dataset": args.dataset,
             "title": title,
