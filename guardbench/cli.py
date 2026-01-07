@@ -37,6 +37,17 @@ def _parse_args():
         required=True,
         help="Model identifier (meaning depends on backend). For PromptGuard: HF model id, e.g. meta-llama/Prompt-Guard-86M",
     )
+    e.add_argument(
+        "--model-positive-label",
+        default=None,
+        help="Positive class label name for hf_classifier backend (e.g. JAILBREAK, TOXIC)",
+    )
+    e.add_argument(
+        "--model-positive-id",
+        type=int,
+        default=None,
+        help="Positive class id for hf_classifier backend (e.g. 1)",
+    )
 
     # dataset selector
     e.add_argument(
@@ -120,7 +131,7 @@ def main():
         print("Try: guardbench eval --backend promptguard --model meta-llama/Prompt-Guard-86M --dataset toxicchat --mode truncation")
         return
 
-    #  Load dataset 
+    # Load dataset 
     missing_to_benign = 0
 
     if args.dataset == "toxicchat":
@@ -193,13 +204,25 @@ def main():
 
     # Load model via registry 
     Backend = get_backend(args.backend)
-    model = Backend(
-        model_id=args.model,
-        mode=args.mode,
-        window=args.window,
-        stride=args.stride,
-        batch_size=args.batch_size,
-    )
+
+    if args.backend == "hf_classifier":
+        model = Backend(
+            model_id=args.model,
+            mode=args.mode,
+            window=args.window,
+            stride=args.stride,
+            batch_size=args.batch_size,
+            positive_label=args.model_positive_label,
+            positive_id=args.model_positive_id,
+        )
+    else:
+        model = Backend(
+            model_id=args.model,
+            mode=args.mode,
+            window=args.window,
+            stride=args.stride,
+            batch_size=args.batch_size,
+        )
 
     print("Backend:", args.backend)
     print("Device :", model.device)
@@ -214,7 +237,7 @@ def main():
     n_skip = 0
 
     t0 = time.perf_counter()
-    if model.device == "cuda":
+    if str(model.device).startswith("cuda"):
         torch.cuda.synchronize()
 
     # Evaluation 
@@ -261,7 +284,6 @@ def main():
                 n_eval += 1
 
     else:
-        # Original per-example path
         for ex in tqdm(ds, total=len(ds), desc=f"Scoring {args.dataset}"):
             text = ex.get(text_col, "")
             if text is None:
@@ -284,7 +306,7 @@ def main():
             conf.add(y_true, y_pred)
             n_eval += 1
 
-    if model.device == "cuda":
+    if str(model.device).startswith("cuda"):
         torch.cuda.synchronize()
     t_total = time.perf_counter() - t0
 
@@ -344,3 +366,7 @@ def main():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"\nWrote results JSON to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()
