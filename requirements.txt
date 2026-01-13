@@ -4,3 +4,4 @@ accelerate
 torch
 tqdm
 pandas
+requests

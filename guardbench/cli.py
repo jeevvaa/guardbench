@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import csv
 import json
 import time
 from pathlib import Path
@@ -77,6 +78,26 @@ def _parse_args():
         help="Write results JSON to this path (e.g., results.json)",
     )
 
+    # NEW: per-example outputs
+    e.add_argument(
+        "--pred-out",
+        default=None,
+        help="Write per-example predictions to CSV/JSONL (e.g., runs/preds.csv or runs/preds.jsonl)",
+    )
+
+    # NEW: mistral moderation HTTP options (only used by mistral_moderation backend)
+    e.add_argument(
+        "--api-url",
+        default=None,
+        help="Mistral moderation URL (default: http://localhost:5005/v1/chat/moderations)",
+    )
+    e.add_argument(
+        "--timeout-s",
+        type=float,
+        default=30.0,
+        help="HTTP timeout seconds for mistral_moderation",
+    )
+
     # batching:
     # - default 1 keeps the exact original behavior
     # - used only for truncation mode in this CLI
@@ -123,6 +144,16 @@ def _parse_args():
     return p.parse_args()
 
 
+def _tp_fp_tn_fn_label(y_true: int, y_pred: int) -> str:
+    if y_true == 1 and y_pred == 1:
+        return "TP"
+    if y_true == 0 and y_pred == 1:
+        return "FP"
+    if y_true == 0 and y_pred == 0:
+        return "TN"
+    return "FN"
+
+
 def main():
     args = _parse_args()
 
@@ -131,7 +162,7 @@ def main():
         print("Try: guardbench eval --backend promptguard --model meta-llama/Prompt-Guard-86M --dataset toxicchat --mode truncation")
         return
 
-    # Load dataset 
+    # Load dataset
     missing_to_benign = 0
 
     if args.dataset == "toxicchat":
@@ -202,7 +233,7 @@ def main():
         )
         title = f"CSV: {args.csv_path}"
 
-    # Load model via registry 
+    # Load model via registry
     Backend = get_backend(args.backend)
 
     if args.backend == "hf_classifier":
@@ -214,6 +245,17 @@ def main():
             batch_size=args.batch_size,
             positive_label=args.model_positive_label,
             positive_id=args.model_positive_id,
+        )
+    elif args.backend == "mistral_moderation":
+        model = Backend(
+            model_id=args.model,
+            mode=args.mode,
+            window=args.window,
+            stride=args.stride,
+            batch_size=args.batch_size,
+            api_url=args.api_url,
+            timeout_s=args.timeout_s,
+            save_details=bool(args.pred_out),
         )
     else:
         model = Backend(
@@ -236,12 +278,48 @@ def main():
     n_eval = 0
     n_skip = 0
 
+    # Per-row output writer 
+    pred_f = None
+    pred_writer = None
+    pred_is_csv = False
+    pred_path = None
+
+    if args.pred_out:
+        pred_path = Path(args.pred_out)
+        pred_path.parent.mkdir(parents=True, exist_ok=True)
+
+       
+        if args.batch_size > 1:
+            print("Note: --pred-out disables batching; using batch_size=1 for per-row output.")
+            args.batch_size = 1
+
+        if pred_path.suffix.lower() == ".csv":
+            pred_is_csv = True
+            pred_f = pred_path.open("w", newline="", encoding="utf-8")
+            fieldnames = [
+                "index",
+                "text",
+                "y_true",
+                "y_pred",
+                "gt_adversarial",
+                "pred_adversarial",
+                "classification",
+                "triggered_categories",
+                "categories_json",
+                "scores_json",
+            ]
+            pred_writer = csv.DictWriter(pred_f, fieldnames=fieldnames)
+            pred_writer.writeheader()
+        else:
+            # default to JSONL
+            pred_f = pred_path.open("w", encoding="utf-8")
+
     t0 = time.perf_counter()
     if str(model.device).startswith("cuda"):
         torch.cuda.synchronize()
 
-    # Evaluation 
-    use_batching = (args.mode == "truncation" and args.batch_size > 1)
+    # Evaluation
+    use_batching = (args.mode == "truncation" and args.batch_size > 1 and not args.pred_out)
 
     if use_batching:
         batch_texts = []
@@ -306,11 +384,47 @@ def main():
             conf.add(y_true, y_pred)
             n_eval += 1
 
+            # Per-row output
+            if pred_f:
+                yt = int(y_true)
+                yp = int(y_pred)
+                cls = _tp_fp_tn_fn_label(yt, yp)
+
+                row = {
+                    "index": n_eval,
+                    "text": text,
+                    "y_true": yt,
+                    "y_pred": yp,
+                    "gt_adversarial": bool(yt == 1),
+                    "pred_adversarial": bool(yp == 1),
+                    "classification": cls,
+                    "triggered_categories": "",
+                    "categories_json": "",
+                    "scores_json": "",
+                }
+
+                if args.backend == "mistral_moderation":
+                    cats = getattr(model, "last_categories", None) or {}
+                    scores = getattr(model, "last_scores", None) or {}
+                    triggered = [k for k, v in cats.items() if v]
+                    row["triggered_categories"] = ";".join(triggered)
+                    row["categories_json"] = json.dumps(cats, ensure_ascii=False)
+                    row["scores_json"] = json.dumps(scores, ensure_ascii=False)
+
+                if pred_is_csv and pred_writer is not None:
+                    pred_writer.writerow(row)
+                else:
+                    pred_f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
     if str(model.device).startswith("cuda"):
         torch.cuda.synchronize()
     t_total = time.perf_counter() - t0
 
-    # Results 
+    if pred_f:
+        pred_f.close()
+        print(f"Wrote per-example predictions to: {pred_path}")
+
+    # Results
     print("\n=== Results ===")
     if args.dataset == "toxicchat":
         print(f"Evaluated: {n_eval} | Skipped: {n_skip} | Missing->Benign: {missing_to_benign}")
@@ -321,8 +435,8 @@ def main():
     print("Precision:", round(conf.precision(), 4))
     print("Recall   :", round(conf.recall(), 4))
     print("F1       :", round(conf.f1(), 4))
-    print("FPR      :", round(conf.fpr(), 4))
-    print("FNR      :", round(conf.fnr(), 4))
+    print("FPR      : ", round(conf.fpr(), 4))
+    print("FNR      : ", round(conf.fnr(), 4))
     print("Accuracy :", round(conf.accuracy(), 4))
 
     eps = (n_eval / t_total) if t_total else 0.0
@@ -332,7 +446,7 @@ def main():
     print("Examples/sec:", round(eps, 2))
     print("ms/example:", round(ms, 2))
 
-    # JSON output 
+    # JSON output
     if args.out:
         result = {
             "backend": args.backend,
